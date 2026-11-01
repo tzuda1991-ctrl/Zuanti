@@ -40,7 +40,7 @@ class SmsReceiver : BroadcastReceiver() {
                     }
                     body.contains("#LOCATE", ignoreCase = true) -> {
                         val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-                        val loc = lm.getLastKnownLocation(LocationManager.GPS_Provider)
+                        val loc = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
                             ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
 
                         val smsManager = SmsManager.getDefault()
