@@ -1,6 +1,7 @@
 package com.example.antitheft
 
 import android.annotation.SuppressLint
+import android.app.PendingIntent
 import android.app.admin.DevicePolicyManager
 import android.content.BroadcastReceiver
 import android.content.ComponentName
@@ -23,12 +24,23 @@ import android.os.Vibrator
 import android.provider.Telephony
 import android.telephony.SmsManager
 import android.telephony.SubscriptionManager
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class SmsReceiver : BroadcastReceiver() {
 
     companion object {
         private var mediaPlayer: MediaPlayer? = null
         private var vibrator: Vibrator? = null
+
+        fun saveLog(context: Context, msg: String) {
+            val prefs = context.getSharedPreferences("AntiTheftPrefs", Context.MODE_PRIVATE)
+            val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+            val oldLogs = prefs.getString("app_logs", "") ?: ""
+            val newLogs = "[$time] $msg\n$oldLogs".take(2000)
+            prefs.edit().putString("app_logs", newLogs).apply()
+        }
 
         fun startAlarm(context: Context) {
             stopAlarm()
@@ -75,26 +87,91 @@ class SmsReceiver : BroadcastReceiver() {
         }
 
         @SuppressLint("MissingPermission")
-        fun sendSmsReply(context: Context, sender: String, message: String, subId: Int = -1) {
+        fun sendSmsReply(context: Context, sender: String, message: String, incomingSubId: Int = -1) {
+            val cleanSender = sender.trim()
+            saveLog(context, "Trying to send SMS to $cleanSender...")
+
             try {
-                val smsManager = if (subId != -1 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    context.getSystemService(SmsManager::class.java).createForSubscriptionId(subId)
-                } else if (subId != -1) {
-                    @Suppress("DEPRECATION")
-                    SmsManager.getSmsManagerForSubscriptionId(subId)
-                } else {
-                    val defaultSubId = SubscriptionManager.getDefaultSmsSubscriptionId()
-                    if (defaultSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
-                        @Suppress("DEPRECATION")
-                        SmsManager.getSmsManagerForSubscriptionId(defaultSubId)
+                val subManager = context.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as SubscriptionManager
+                val activeList = subManager.activeSubscriptionInfoList
+
+                val targetSubId = when {
+                    incomingSubId != -1 -> incomingSubId
+                    SubscriptionManager.getDefaultSmsSubscriptionId() != SubscriptionManager.INVALID_SUBSCRIPTION_ID ->
+                        SubscriptionManager.getDefaultSmsSubscriptionId()
+                    !activeList.isNullOrEmpty() -> activeList[0].subscriptionId
+                    else -> -1
+                }
+
+                val smsManager = if (targetSubId != -1) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        context.getSystemService(SmsManager::class.java).createForSubscriptionId(targetSubId)
                     } else {
                         @Suppress("DEPRECATION")
-                        SmsManager.getDefault()
+                        SmsManager.getSmsManagerForSubscriptionId(targetSubId)
                     }
+                } else {
+                    @Suppress("DEPRECATION")
+                    SmsManager.getDefault()
                 }
-                smsManager.sendTextMessage(sender, null, message, null, null)
+
+                val sentIntent = PendingIntent.getBroadcast(
+                    context, 0, Intent("SMS_SENT_STATUS"),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                )
+
+                val parts = smsManager.divideMessage(message)
+                if (parts.size > 1) {
+                    smsManager.sendMultipartTextMessage(cleanSender, null, parts, null, null)
+                } else {
+                    smsManager.sendTextMessage(cleanSender, null, message, sentIntent, null)
+                }
+                saveLog(context, "SMS command dispatched via SubID: $targetSubId")
             } catch (e: Exception) {
-                e.printStackTrace()
+                saveLog(context, "SMS FAILED: ${e.javaClass.simpleName} - ${e.message}")
+            }
+        }
+
+        @SuppressLint("MissingPermission")
+        fun handleLocate(context: Context, sender: String, subId: Int) {
+            val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+            val battery = getBatteryLevel(context)
+
+            val lastLoc = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+                ?: lm.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER)
+
+            if (lastLoc != null) {
+                saveLog(context, "Found cached location: ${lastLoc.latitude}, ${lastLoc.longitude}")
+                // Space added in URL so carrier spam filters don't block the SMS
+                val link = "Phone Location (Bat $battery%): maps.google.com/?q=${lastLoc.latitude},${lastLoc.longitude}"
+                sendSmsReply(context, sender, link, subId)
+            } else {
+                saveLog(context, "No cached location. Requesting live update...")
+                val provider = when {
+                    lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER) -> LocationManager.NETWORK_PROVIDER
+                    lm.isProviderEnabled(LocationManager.GPS_PROVIDER) -> LocationManager.GPS_PROVIDER
+                    else -> null
+                }
+
+                if (provider != null) {
+                    val listener = object : LocationListener {
+                        override fun onLocationChanged(loc: Location) {
+                            saveLog(context, "Live location received: ${loc.latitude}, ${loc.longitude}")
+                            val link = "Live Location (Bat $battery%): maps.google.com/?q=${loc.latitude},${loc.longitude}"
+                            sendSmsReply(context, sender, link, subId)
+                            lm.removeUpdates(this)
+                        }
+                        override fun onProviderEnabled(p: String) {}
+                        override fun onProviderDisabled(p: String) {}
+                        @Deprecated("Deprecated in Java")
+                        override fun onStatusChanged(p: String?, s: Int, e: Bundle?) {}
+                    }
+                    lm.requestLocationUpdates(provider, 0L, 0f, listener, Looper.getMainLooper())
+                } else {
+                    saveLog(context, "GPS/Location is OFF on phone!")
+                    sendSmsReply(context, sender, "Phone GPS OFF hai! Battery: $battery%", subId)
+                }
             }
         }
 
@@ -110,7 +187,8 @@ class SmsReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == Telephony.Sms.Intents.SMS_RECEIVED_ACTION) {
             val bundle = intent.extras
-            val subId = bundle?.getInt("subscription", -1) ?: -1
+            val subId = bundle?.getInt("subscription", -1)
+                ?: bundle?.getInt("android.telephony.extra.SUBSCRIPTION_INDEX", -1) ?: -1
             val messages = Telephony.Sms.Intents.getMessagesFromIntent(intent)
 
             for (sms in messages) {
@@ -120,6 +198,7 @@ class SmsReceiver : BroadcastReceiver() {
                 if (body.contains("#")) {
                     context.getSharedPreferences("AntiTheftPrefs", Context.MODE_PRIVATE)
                         .edit().putString("trusted_number", sender).apply()
+                    saveLog(context, "Received '$body' from $sender (SubId: $subId)")
                 }
 
                 when {
@@ -149,45 +228,11 @@ class SmsReceiver : BroadcastReceiver() {
                             AudioManager.RINGER_MODE_VIBRATE -> "Vibrate"
                             else -> "Normal"
                         }
-                        sendSmsReply(context, sender, "Phone Status:\nBattery: $battery%\nSound Mode: $mode", subId)
+                        sendSmsReply(context, sender, "Phone Status - Battery: $battery%, Sound: $mode", subId)
                     }
 
                     body.contains("#LOCATE") -> {
-                        val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-                        val battery = getBatteryLevel(context)
-
-                        val lastLoc = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-                            ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-
-                        if (lastLoc != null) {
-                            val link = "Location (Bat: $battery%): https://maps.google.com/?q=${lastLoc.latitude},${lastLoc.longitude}"
-                            sendSmsReply(context, sender, link, subId)
-                        } else {
-                            val provider = when {
-                                lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER) -> LocationManager.NETWORK_PROVIDER
-                                lm.isProviderEnabled(LocationManager.GPS_PROVIDER) -> LocationManager.GPS_PROVIDER
-                                else -> null
-                            }
-
-                            if (provider != null) {
-                                val pendingResult = goAsync()
-                                val listener = object : LocationListener {
-                                    override fun onLocationChanged(loc: Location) {
-                                        val link = "Live Location (Bat: $battery%): https://maps.google.com/?q=${loc.latitude},${loc.longitude}"
-                                        sendSmsReply(context, sender, link, subId)
-                                        lm.removeUpdates(this)
-                                        pendingResult.finish()
-                                    }
-                                    override fun onProviderEnabled(p: String) {}
-                                    override fun onProviderDisabled(p: String) {}
-                                    @Deprecated("Deprecated in Java")
-                                    override fun onStatusChanged(p: String?, s: Int, e: Bundle?) {}
-                                }
-                                lm.requestLocationUpdates(provider, 0L, 0f, listener, Looper.getMainLooper())
-                            } else {
-                                sendSmsReply(context, sender, "Phone ka GPS/Location OFF hai! Battery: $battery%", subId)
-                            }
-                        }
+                        handleLocate(context, sender, subId)
                     }
                 }
             }
