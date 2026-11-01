@@ -3,34 +3,33 @@ package com.example.antitheft
 import android.Manifest
 import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
+import android.graphics.Color
 import android.os.Bundle
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 
 class MainActivity : AppCompatActivity() {
+    private lateinit var logText: TextView
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        val scroll = ScrollView(this)
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(60, 60, 60, 60)
+            setPadding(50, 50, 50, 50)
         }
 
         val infoText = TextView(this).apply {
-            text = "Anti-Theft SMS Commands:\n\n" +
-                   "1. #LOCK - Phone lock karein\n" +
-                   "2. #ALARM - Siren + Vibration chalu karein\n" +
-                   "3. #STOP - Alarm band karein\n" +
-                   "4. #LOCATE - Live Google Map + Battery %\n" +
-                   "5. #STATUS - Battery & Sound status\n" +
-                   "Auto: 3 Galat Password par Alarm + SMS Alert!\n\n" +
-                   "Niche dono buttons daba kar permissions allow karein:"
-            textSize = 15f
-            setPadding(0, 0, 0, 40)
+            text = "SMS Commands: #LOCK, #ALARM, #STOP, #LOCATE, #STATUS"
+            textSize = 16f
+            setPadding(0, 0, 0, 30)
         }
 
         val btnPermissions = Button(this).apply {
@@ -56,15 +55,59 @@ class MainActivity : AppCompatActivity() {
                 val compName = ComponentName(this@MainActivity, AdminReceiver::class.java)
                 val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
                     putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, compName)
-                    putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, "Lock aur Wrong Password detection ke liye.")
                 }
                 startActivity(intent)
             }
         }
 
+        val btnTestGps = Button(this).apply {
+            text = "3. Test GPS & Send SMS to Last Sender"
+            setOnClickListener {
+                val prefs = getSharedPreferences("AntiTheftPrefs", Context.MODE_PRIVATE)
+                val sender = prefs.getString("trusted_number", null)
+                if (sender != null) {
+                    SmsReceiver.saveLog(this@MainActivity, "Manual Test started for $sender...")
+                    SmsReceiver.handleLocate(this@MainActivity, sender, -1)
+                    refreshLogs()
+                } else {
+                    SmsReceiver.saveLog(this@MainActivity, "Pehle dusre phone se koi # command SMS bhejein taaki number save ho!")
+                    refreshLogs()
+                }
+            }
+        }
+
+        val btnRefresh = Button(this).apply {
+            text = "4. Refresh Activity Logs"
+            setOnClickListener { refreshLogs() }
+        }
+
+        logText = TextView(this).apply {
+            textSize = 14f
+            setTextColor(Color.DKGRAY)
+            setPadding(0, 40, 0, 40)
+        }
+
         layout.addView(infoText)
         layout.addView(btnPermissions)
         layout.addView(btnAdmin)
-        setContentView(layout)
+        layout.addView(btnTestGps)
+        layout.addView(btnRefresh)
+        layout.addView(logText)
+        scroll.addView(layout)
+        setContentView(scroll)
+
+        refreshLogs()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refreshLogs()
+    }
+
+    private fun refreshLogs() {
+        val prefs = getSharedPreferences("AntiTheftPrefs", Context.MODE_PRIVATE)
+        val logs = prefs.getString("app_logs", "Abhi tak koi command nahi aaya.")
+        val trusted = prefs.getString("trusted_number", "None")
+        logText.text = "Last Command Sender: $trusted\n\n--- LIVE LOGS ---\n$logs"
     }
 }
