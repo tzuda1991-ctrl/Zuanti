@@ -15,6 +15,7 @@ import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.RingtoneManager
+import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
@@ -22,6 +23,7 @@ import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.provider.Telephony
+import android.speech.tts.TextToSpeech
 import android.telephony.SmsManager
 import android.telephony.SubscriptionManager
 import java.text.SimpleDateFormat
@@ -33,13 +35,27 @@ class SmsReceiver : BroadcastReceiver() {
     companion object {
         private var mediaPlayer: MediaPlayer? = null
         private var vibrator: Vibrator? = null
+        private var tts: TextToSpeech? = null
 
         fun saveLog(context: Context, msg: String) {
             val prefs = context.getSharedPreferences("AntiTheftPrefs", Context.MODE_PRIVATE)
             val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
             val oldLogs = prefs.getString("app_logs", "") ?: ""
-            val newLogs = "[$time] $msg\n$oldLogs".take(2000)
+            val newLogs = "[$time] $msg\n$oldLogs".take(2500)
             prefs.edit().putString("app_logs", newLogs).apply()
+        }
+
+        fun speakMessage(context: Context, textToSpeak: String) {
+            val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val maxVol = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            am.setStreamVolume(AudioManager.STREAM_MUSIC, maxVol, 0)
+
+            tts = TextToSpeech(context.applicationContext) { status ->
+                if (status == TextToSpeech.SUCCESS) {
+                    tts?.language = Locale("hi", "IN")
+                    tts?.speak("$textToSpeak. $textToSpeak.", TextToSpeech.QUEUE_FLUSH, null, "ANTITHEFT_TTS")
+                }
+            }
         }
 
         fun startAlarm(context: Context) {
@@ -81,6 +97,7 @@ class SmsReceiver : BroadcastReceiver() {
                 }
                 mediaPlayer = null
                 vibrator?.cancel()
+                tts?.stop()
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -89,8 +106,6 @@ class SmsReceiver : BroadcastReceiver() {
         @SuppressLint("MissingPermission")
         fun sendSmsReply(context: Context, sender: String, message: String, incomingSubId: Int = -1) {
             val cleanSender = sender.trim()
-            saveLog(context, "Trying to send SMS to $cleanSender...")
-
             try {
                 val subManager = context.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as SubscriptionManager
                 val activeList = subManager.activeSubscriptionInfoList
@@ -126,9 +141,9 @@ class SmsReceiver : BroadcastReceiver() {
                 } else {
                     smsManager.sendTextMessage(cleanSender, null, message, sentIntent, null)
                 }
-                saveLog(context, "SMS command dispatched via SubID: $targetSubId")
+                saveLog(context, "SMS sent to $cleanSender")
             } catch (e: Exception) {
-                saveLog(context, "SMS FAILED: ${e.javaClass.simpleName} - ${e.message}")
+                saveLog(context, "SMS FAILED: ${e.message}")
             }
         }
 
@@ -142,12 +157,9 @@ class SmsReceiver : BroadcastReceiver() {
                 ?: lm.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER)
 
             if (lastLoc != null) {
-                saveLog(context, "Found cached location: ${lastLoc.latitude}, ${lastLoc.longitude}")
-                // Space added in URL so carrier spam filters don't block the SMS
                 val link = "Phone Location (Bat $battery%): maps.google.com/?q=${lastLoc.latitude},${lastLoc.longitude}"
                 sendSmsReply(context, sender, link, subId)
             } else {
-                saveLog(context, "No cached location. Requesting live update...")
                 val provider = when {
                     lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER) -> LocationManager.NETWORK_PROVIDER
                     lm.isProviderEnabled(LocationManager.GPS_PROVIDER) -> LocationManager.GPS_PROVIDER
@@ -157,7 +169,6 @@ class SmsReceiver : BroadcastReceiver() {
                 if (provider != null) {
                     val listener = object : LocationListener {
                         override fun onLocationChanged(loc: Location) {
-                            saveLog(context, "Live location received: ${loc.latitude}, ${loc.longitude}")
                             val link = "Live Location (Bat $battery%): maps.google.com/?q=${loc.latitude},${loc.longitude}"
                             sendSmsReply(context, sender, link, subId)
                             lm.removeUpdates(this)
@@ -169,7 +180,6 @@ class SmsReceiver : BroadcastReceiver() {
                     }
                     lm.requestLocationUpdates(provider, 0L, 0f, listener, Looper.getMainLooper())
                 } else {
-                    saveLog(context, "GPS/Location is OFF on phone!")
                     sendSmsReply(context, sender, "Phone GPS OFF hai! Battery: $battery%", subId)
                 }
             }
@@ -190,19 +200,30 @@ class SmsReceiver : BroadcastReceiver() {
             val subId = bundle?.getInt("subscription", -1)
                 ?: bundle?.getInt("android.telephony.extra.SUBSCRIPTION_INDEX", -1) ?: -1
             val messages = Telephony.Sms.Intents.getMessagesFromIntent(intent)
+            val prefs = context.getSharedPreferences("AntiTheftPrefs", Context.MODE_PRIVATE)
+            val savedPin = prefs.getString("secret_pin", "1234") ?: "1234"
+            val savedTrusted = prefs.getString("trusted_number", "") ?: ""
 
             for (sms in messages) {
-                val body = sms.messageBody?.uppercase() ?: ""
+                val rawBody = sms.messageBody?.trim() ?: ""
+                val upperBody = rawBody.uppercase()
                 val sender = sms.originatingAddress ?: continue
 
-                if (body.contains("#")) {
-                    context.getSharedPreferences("AntiTheftPrefs", Context.MODE_PRIVATE)
-                        .edit().putString("trusted_number", sender).apply()
-                    saveLog(context, "Received '$body' from $sender (SubId: $subId)")
+                if (!upperBody.contains("#")) continue
+
+                // Allow if message contains saved PIN, OR comes from saved Emergency Number
+                val isPinValid = upperBody.contains(savedPin.uppercase()) ||
+                        (savedTrusted.isNotEmpty() && sender.endsWith(savedTrusted.takeLast(10)))
+
+                if (!isPinValid) {
+                    saveLog(context, "Blocked command from $sender (Wrong PIN)")
+                    continue
                 }
 
+                saveLog(context, "Authorized '$rawBody' from $sender")
+
                 when {
-                    body.contains("#LOCK") -> {
+                    upperBody.contains("#LOCK") -> {
                         val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
                         val adminName = ComponentName(context, AdminReceiver::class.java)
                         if (dpm.isAdminActive(adminName)) {
@@ -211,16 +232,46 @@ class SmsReceiver : BroadcastReceiver() {
                         }
                     }
 
-                    body.contains("#ALARM") || body.contains("#SIREN") -> {
+                    upperBody.contains("#ALARM") || upperBody.contains("#SIREN") -> {
                         startAlarm(context)
                     }
 
-                    body.contains("#STOP") -> {
+                    upperBody.contains("#STOP") -> {
                         stopAlarm()
                         sendSmsReply(context, sender, "Alarm band kar diya gaya hai.", subId)
                     }
 
-                    body.contains("#STATUS") -> {
+                    upperBody.contains("#RING") -> {
+                        val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                        am.ringerMode = AudioManager.RINGER_MODE_NORMAL
+                        val maxRing = am.getStreamMaxVolume(AudioManager.STREAM_RING)
+                        am.setStreamVolume(AudioManager.STREAM_RING, maxRing, 0)
+                        sendSmsReply(context, sender, "Silent Mode hata kar Normal Full Volume kar diya hai.", subId)
+                    }
+
+                    upperBody.contains("#CALLME") -> {
+                        try {
+                            val callIntent = Intent(Intent.ACTION_CALL).apply {
+                                data = Uri.parse("tel:$sender")
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            context.startActivity(callIntent)
+                            saveLog(context, "Calling back $sender...")
+                        } catch (e: Exception) {
+                            saveLog(context, "Call failed: ${e.message}")
+                        }
+                    }
+
+                    upperBody.contains("#SPEAK") -> {
+                        val cleanMsg = rawBody.replace(Regex("(?i)#SPEAK"), "")
+                            .replace(savedPin, "")
+                            .trim()
+                            .ifEmpty { "Yeh phone chori ka hai, kripya wapas karein" }
+                        speakMessage(context, cleanMsg)
+                        sendSmsReply(context, sender, "Speaking message loud: '$cleanMsg'", subId)
+                    }
+
+                    upperBody.contains("#STATUS") -> {
                         val battery = getBatteryLevel(context)
                         val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
                         val mode = when (am.ringerMode) {
@@ -231,7 +282,7 @@ class SmsReceiver : BroadcastReceiver() {
                         sendSmsReply(context, sender, "Phone Status - Battery: $battery%, Sound: $mode", subId)
                     }
 
-                    body.contains("#LOCATE") -> {
+                    upperBody.contains("#LOCATE") -> {
                         handleLocate(context, sender, subId)
                     }
                 }
