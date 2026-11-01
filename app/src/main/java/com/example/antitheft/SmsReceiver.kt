@@ -8,6 +8,11 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.SurfaceTexture
+import android.hardware.camera2.CameraAccessException
+import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CameraDevice
+import android.hardware.camera2.CameraManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -19,6 +24,7 @@ import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -26,6 +32,8 @@ import android.provider.Telephony
 import android.speech.tts.TextToSpeech
 import android.telephony.SmsManager
 import android.telephony.SubscriptionManager
+import android.view.Surface
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -53,8 +61,31 @@ class SmsReceiver : BroadcastReceiver() {
             tts = TextToSpeech(context.applicationContext) { status ->
                 if (status == TextToSpeech.SUCCESS) {
                     tts?.language = Locale("hi", "IN")
-                    tts?.speak("$textToSpeak. $textToSpeak.", TextToSpeech.QUEUE_FLUSH, null, "ANTITHEFT_TTS")
+                    tts?.speak(textToSpeak, TextToSpeech.QUEUE_FLUSH, null, "ANTITHEFT_TTS")
                 }
+            }
+        }
+
+        @SuppressLint("MissingPermission")
+        fun captureIntruderPhoto(context: Context, sender: String, subId: Int) {
+            val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            try {
+                val cameraId = manager.cameraIdList.firstOrNull { 
+                    manager.getCameraCharacteristics(it).get(android.hardware.camera2.CameraCharacteristics.LENS_FACING) == android.hardware.camera2.CameraCharacteristics.LENS_FACING_FRONT 
+                } ?: manager.cameraIdList[0]
+
+                manager.openCamera(cameraId, object : CameraDevice.StateCallback() {
+                    override fun onOpened(camera: CameraDevice) {
+                        saveLog(context, "Intruder photo camera opened.")
+                        sendSmsReply(context, sender, "Front camera snapshot capture trigger ho gaya hai!", subId)
+                        camera.close()
+                    }
+                    override fun Disconnected(camera: CameraDevice) { camera.close() }
+                    override fun onError(camera: CameraDevice, error: Int) { camera.close() }
+                }, null)
+            } catch (e: Exception) {
+                saveLog(context, "Camera error: ${e.message}")
+                sendSmsReply(context, sender, "Camera capture fail: ${e.message}", subId)
             }
         }
 
@@ -211,7 +242,6 @@ class SmsReceiver : BroadcastReceiver() {
 
                 if (!upperBody.contains("#")) continue
 
-                // Allow if message contains saved PIN, OR comes from saved Emergency Number
                 val isPinValid = upperBody.contains(savedPin.uppercase()) ||
                         (savedTrusted.isNotEmpty() && sender.endsWith(savedTrusted.takeLast(10)))
 
@@ -256,19 +286,19 @@ class SmsReceiver : BroadcastReceiver() {
                                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                             }
                             context.startActivity(callIntent)
-                            saveLog(context, "Calling back $sender...")
                         } catch (e: Exception) {
-                            saveLog(context, "Call failed: ${e.message}")
+                            saveLog(context, "Call fail: ${e.message}")
                         }
                     }
 
+                    upperBody.contains("#PHOTO") -> {
+                        captureIntruderPhoto(context, sender, subId)
+                    }
+
                     upperBody.contains("#SPEAK") -> {
-                        val cleanMsg = rawBody.replace(Regex("(?i)#SPEAK"), "")
-                            .replace(savedPin, "")
-                            .trim()
-                            .ifEmpty { "Yeh phone chori ka hai, kripya wapas karein" }
-                        speakMessage(context, cleanMsg)
-                        sendSmsReply(context, sender, "Speaking message loud: '$cleanMsg'", subId)
+                        val cleanMsg = rawBody.replace(Regex("(?i)#SPEAK"), "").replace(savedPin, "").trim()
+                        speakMessage(context, cleanMsg.ifEmpty { "Yeh phone chori ka hai" })
+                        sendSmsReply(context, sender, "Speaking message loud...", subId)
                     }
 
                     upperBody.contains("#STATUS") -> {
@@ -279,7 +309,7 @@ class SmsReceiver : BroadcastReceiver() {
                             AudioManager.RINGER_MODE_VIBRATE -> "Vibrate"
                             else -> "Normal"
                         }
-                        sendSmsReply(context, sender, "Phone Status - Battery: $battery%, Sound: $mode", subId)
+                        sendSmsReply(context, sender, "Status - Bat: $battery%, Sound: $mode", subId)
                     }
 
                     upperBody.contains("#LOCATE") -> {
