@@ -5,23 +5,19 @@ import android.content.Intent
 import android.os.Bundle
 import android.widget.Button
 import android.widget.GridLayout
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 
 class CalculatorActivity : AppCompatActivity() {
-    private lateinit var display: TextView
+    private lateinit var screenText: TextView
     private var input = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val layout = GridLayout(this).apply {
-            columnCount = 4
-            setPadding(30, 100, 30, 30)
-        }
-
-        display = TextView(this).apply {
+        screenText = TextView(this).apply {
             textSize = 36f
             text = "0"
             setPadding(20, 50, 20, 50)
@@ -37,19 +33,15 @@ class CalculatorActivity : AppCompatActivity() {
         val prefs = getSharedPreferences("AntiTheftPrefs", Context.MODE_PRIVATE)
         val secretPin = prefs.getString("secret_pin", "1234") ?: "1234"
 
-        // Layout parameters for display
-        setContentView(display)
-
-        // Simple UI setup for Calculator
-        val mainLayout = android.widget.LinearLayout(this).apply {
-            orientation = android.widget.LinearLayout.VERTICAL
+        val mainLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             setPadding(40, 60, 40, 40)
-            addView(display)
-            
+            addView(screenText)
+
             val grid = GridLayout(context).apply {
                 columnCount = 4
             }
-            
+
             for (bText in buttons) {
                 val btn = Button(context).apply {
                     text = bText
@@ -58,7 +50,7 @@ class CalculatorActivity : AppCompatActivity() {
                         when (bText) {
                             "C" -> {
                                 input = ""
-                                display.text = "0"
+                                screenText.text = "0"
                             }
                             "=" -> {
                                 if (input == secretPin) {
@@ -66,13 +58,13 @@ class CalculatorActivity : AppCompatActivity() {
                                     startActivity(Intent(context, MainActivity::class.java))
                                     finish()
                                 } else {
-                                    display.text = "Error"
+                                    screenText.text = "Error"
                                     input = ""
                                 }
                             }
                             else -> {
                                 input += bText
-                                display.text = input
+                                screenText.text = input
                             }
                         }
                     }
