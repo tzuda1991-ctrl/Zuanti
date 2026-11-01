@@ -67,27 +67,21 @@ class SmsReceiver : BroadcastReceiver() {
         }
 
         @SuppressLint("MissingPermission")
-        fun captureIntruderPhoto(context: Context, sender: String, subId: Int) {
-            val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                fun captureIntruderPhoto(context: Context, sender: String, subId: Int) {
             try {
-                val cameraId = manager.cameraIdList.firstOrNull { 
-                    manager.getCameraCharacteristics(it).get(android.hardware.camera2.CameraCharacteristics.LENS_FACING) == android.hardware.camera2.CameraCharacteristics.LENS_FACING_FRONT 
-                } ?: manager.cameraIdList[0]
-
-                manager.openCamera(cameraId, object : CameraDevice.StateCallback() {
-                    override fun onOpened(camera: CameraDevice) {
-                        saveLog(context, "Intruder photo camera opened.")
-                        sendSmsReply(context, sender, "Front camera snapshot capture trigger ho gaya hai!", subId)
-                        camera.close()
-                    }
-                    override fun onDisconnected(camera: CameraDevice) { camera.close() }
-                    override fun onError(camera: CameraDevice, error: Int) { camera.close() }
-                }, null)
+                saveLog(context, "Launching invisible camera activity...")
+                val photoIntent = Intent(context, PhotoCaptureActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                    putExtra("sender", sender)
+                    putExtra("subId", subId)
+                }
+                context.startActivity(photoIntent)
             } catch (e: Exception) {
-                saveLog(context, "Camera error: ${e.message}")
-                sendSmsReply(context, sender, "Camera capture fail: ${e.message}", subId)
+                saveLog(context, "Camera launch error: ${e.message}")
+                sendSmsReply(context, sender, "Camera launch fail: ${e.message}", subId)
             }
         }
+
 
         fun startAlarm(context: Context) {
             stopAlarm()
