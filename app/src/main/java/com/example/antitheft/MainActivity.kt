@@ -6,6 +6,7 @@ import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Bundle
 import android.telephony.SubscriptionManager
@@ -33,55 +34,53 @@ class MainActivity : AppCompatActivity() {
         }
 
         val titleText = TextView(this).apply {
-            text = "Anti-Theft Setup & Commands\n" +
-                   "Use PIN with commands (e.g., #LOCATE 1234):\n" +
-                   "• #LOCK <PIN> (Lock Phone)\n" +
-                   "• #ALARM <PIN> / #STOP <PIN>\n" +
+            text = "Stealth Anti-Theft & Media Vault\n" +
+                   "• #LOCK <PIN> | #ALARM <PIN> | #STOP <PIN>\n" +
                    "• #LOCATE <PIN> (GPS Map Link)\n" +
-                   "• #STATUS <PIN> (Battery & Sound)\n" +
-                   "• #CALLME <PIN> (Phone calls you back)\n" +
-                   "• #SPEAK <PIN> <Msg> (Speak loud message)\n" +
-                   "• #RING <PIN> (Unmute silent phone)"
+                   "• #CALLME <PIN> (Auto Voice Call)\n" +
+                   "• #SPEAK <PIN> <Msg> (Loud TTS Voice)\n" +
+                   "• #PHOTO <PIN> (Capture Front Camera Snap)\n" +
+                   "• #RING <PIN> (Unmute Volume)"
             textSize = 14f
             setPadding(0, 0, 0, 25)
         }
 
         val inputNumber = EditText(this).apply {
-            hint = "Emergency Mobile Number (e.g. +918238523830)"
-            setText(prefs.getString("trusted_number", "+918238523830"))
+            hint = "Emergency Mobile Number"
+            setText(prefs.getString("trusted_number", ""))
         }
 
         val inputPin = EditText(this).apply {
-            hint = "Secret 4-Digit PIN (e.g. 1234)"
+            hint = "Secret 4-Digit PIN (for Calculator & SMS)"
             setText(prefs.getString("secret_pin", "1234"))
         }
 
         val btnSave = Button(this).apply {
-            text = "SAVE NUMBER, PIN & LOCK CURRENT SIM"
+            text = "SAVE SETTINGS"
             setOnClickListener {
                 val num = inputNumber.text.toString().trim()
                 val pin = inputPin.text.toString().trim().ifEmpty { "1234" }
-
-                var simId = "SIM_SAVED"
-                try {
-                    val sm = getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as SubscriptionManager
-                    simId = sm.activeSubscriptionInfoList?.firstOrNull()?.iccId ?: "SIM_SAVED"
-                } catch (_: Exception) {}
-
-                prefs.edit()
-                    .putString("trusted_number", num)
-                    .putString("secret_pin", pin)
-                    .putString("saved_sim_id", simId)
-                    .apply()
-
-                SmsReceiver.saveLog(this@MainActivity, "Saved Emergency Number: $num & PIN: $pin")
-                Toast.makeText(this@MainActivity, "Settings Saved Successfully!", Toast.LENGTH_SHORT).show()
+                prefs.edit().putString("trusted_number", num).putString("secret_pin", pin).apply()
+                Toast.makeText(this@MainActivity, "Saved!", Toast.LENGTH_SHORT).show()
                 refreshLogs()
             }
         }
 
+        val btnHide = Button(this).apply {
+            text = "HIDE APP FROM DRAWER (STEALTH MODE)"
+            setOnClickListener {
+                val p = packageManager
+                p.setComponentEnabledSetting(
+                    ComponentName(this@MainActivity, CalculatorActivity::class.java),
+                    PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                    PackageManager.DONT_KILL_APP
+                )
+                Toast.makeText(this@MainActivity, "App Hidden from Menu! Sirf Settings se dikhega.", Toast.LENGTH_LONG).show()
+            }
+        }
+
         val btnPermissions = Button(this).apply {
-            text = "1. Allow All Permissions (With Call)"
+            text = "1. Allow All Permissions (Camera & SMS)"
             setOnClickListener {
                 ActivityCompat.requestPermissions(
                     this@MainActivity,
@@ -90,6 +89,8 @@ class MainActivity : AppCompatActivity() {
                         Manifest.permission.SEND_SMS,
                         Manifest.permission.READ_PHONE_STATE,
                         Manifest.permission.CALL_PHONE,
+                        Manifest.permission.CAMERA,
+                        Manifest.permission.RECORD_AUDIO,
                         Manifest.permission.ACCESS_FINE_LOCATION,
                         Manifest.permission.ACCESS_COARSE_LOCATION
                     ),
@@ -109,25 +110,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val btnTestGps = Button(this).apply {
-            text = "3. Test GPS & Send SMS to Saved Number"
-            setOnClickListener {
-                val sender = prefs.getString("trusted_number", null)
-                if (!sender.isNullOrEmpty()) {
-                    SmsReceiver.saveLog(this@MainActivity, "Manual Test started for $sender...")
-                    SmsReceiver.handleLocate(this@MainActivity, sender, -1)
-                    refreshLogs()
-                } else {
-                    Toast.makeText(this@MainActivity, "Pehle upar Emergency Number save karein!", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }
-
-        val btnRefresh = Button(this).apply {
-            text = "4. Refresh Activity Logs"
-            setOnClickListener { refreshLogs() }
-        }
-
         logText = TextView(this).apply {
             textSize = 13f
             setTextColor(Color.DKGRAY)
@@ -138,10 +120,9 @@ class MainActivity : AppCompatActivity() {
         layout.addView(inputNumber)
         layout.addView(inputPin)
         layout.addView(btnSave)
+        layout.addView(btnHide)
         layout.addView(btnPermissions)
         layout.addView(btnAdmin)
-        layout.addView(btnTestGps)
-        layout.addView(btnRefresh)
         layout.addView(logText)
         scroll.addView(layout)
         setContentView(scroll)
@@ -156,9 +137,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshLogs() {
         val prefs = getSharedPreferences("AntiTheftPrefs", Context.MODE_PRIVATE)
-        val logs = prefs.getString("app_logs", "Abhi tak koi command nahi aaya.")
+        val logs = prefs.getString("app_logs", "No logs yet.")
         val trusted = prefs.getString("trusted_number", "Not Set")
         val pin = prefs.getString("secret_pin", "1234")
-        logText.text = "Emergency No: $trusted | Secret PIN: $pin\n\n--- LIVE LOGS ---\n$logs"
+        logText.text = "Emergency No: $trusted | PIN: $pin\n\n--- LIVE LOGS ---\n$logs"
     }
 }
